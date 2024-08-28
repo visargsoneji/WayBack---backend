@@ -1,12 +1,20 @@
-from fastapi import APIRouter, HTTPException, Query, Response, Depends
-from typing import List, Optional
-from ..config import database, get_redis
-from ..models import model_description, model_app, model_developer, model_category_apps__model_app_categories, model_category
-from ..models import model_name, model_download, model_version, model_androidmanifest, model_app_permissions, model_permissionrequested, model_price, model_rating
-from ..schemas import ModelName, ModelDescription, DownloadDetails
+from fastapi import APIRouter, HTTPException, Query, Response, Depends, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, extract, and_
 from sqlalchemy.dialects import postgresql
+from typing import List, Optional
+from databases import Database
+from datetime import datetime
 import time
+import paramiko
+import os
+import json
+
+from ..config import get_database, get_redis
+from ..models import model_description, model_app, model_developer, model_category_apps__model_app_categories, model_category, model_user
+from ..models import model_name, model_download, model_version, model_androidmanifest, model_app_permissions, model_permissionrequested, model_rating
+from ..schemas import ModelName, ModelDescription, DownloadDetails
+from .user_routes import get_current_user
 
 router = APIRouter()
 
@@ -35,6 +43,7 @@ async def get_query_params(
 async def search_apps(
     response: Response,
     params: dict = Depends(get_query_params),
+    database: Database = Depends(get_database)
 ):
     offset = (params["page"] - 1) * params["limit"]
     name_query = f"%{params['query']}%" if params["query"] else None
@@ -108,30 +117,37 @@ async def search_apps(
     start_time = time.time()
     # Check if the total count for this query is cached
     cache_params = params.copy()
+    cache_result_key = f"result:{cache_params}"
+    redis_client = get_redis()
+    results = await redis_client.get(cache_result_key)
+    
+    start_time = time.time()
+    if results is None:
+        db_results = await database.fetch_all(query_stmt)
+        results = [serialize_result(result) for result in db_results]
+        await redis_client.set(cache_result_key, json.dumps(results), ex=600)  # Cache for 10 minutes
+    else:
+        results = json.loads(results)
+        await redis_client.expire(cache_result_key, 600)
+    main_query_time = time.time() - start_time
+    print(f"Main query time: {main_query_time:.2f} seconds")
+
     cache_params.pop("page", None)
     cache_params.pop("limit", None)
-
-    # Generate the cache key
-    cache_key = f"count:{cache_params}"
-    redis_client = get_redis()
-    total_count = await redis_client.get(cache_key)
+    cache_count_key = f"count:{cache_params}"
+    total_count = await redis_client.get(cache_count_key)
+    start_time = time.time()
     if total_count is None:
-        # Fetch total count of matching results
         total_count = await database.fetch_val(count_stmt)
-        await redis_client.set(cache_key, total_count, ex=600)  # Cache for 10 minutes
+        await redis_client.set(cache_count_key, total_count, ex=600)  # Cache for 10 minutes
     else:
         total_count = int(total_count)
+        await redis_client.expire(cache_count_key, 600)
     count_query_time = time.time() - start_time
     print(f"Count query time: {count_query_time:.2f} seconds")
 
     # Print the query in raw SQL format
     print(query_stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
-
-    start_time = time.time()
-    # Execute the queries
-    results = await database.fetch_all(query_stmt)
-    main_query_time = time.time() - start_time
-    print(f"Main query time: {main_query_time:.2f} seconds")
 
     if not results:
         raise HTTPException(status_code=404, detail="No matching records found")
@@ -139,8 +155,17 @@ async def search_apps(
     response.headers['x-total-count'] = str(total_count)
     return results
 
+def serialize_result(result):
+    # Convert Record to dictionary
+    result_dict = dict(result)
+    # Convert datetime objects to string format
+    for key, value in result_dict.items():
+        if isinstance(value, datetime):
+            result_dict[key] = value.isoformat()  # Convert datetime to ISO format string
+    return result_dict
+
 @router.get("/details/{app_id}", response_model=ModelDescription)
-async def fetchDetails(app_id: int):
+async def fetchDetails(app_id: int, database: Database = Depends(get_database)):
     md = model_description.alias("md")
     ma = model_app.alias("ma")
     mdev = model_developer.alias("mdev")
@@ -181,7 +206,7 @@ async def fetchDetails(app_id: int):
     return result
 
 @router.get("/version-details/{app_id}", response_model=List[DownloadDetails])
-async def get_version_details(app_id: int):
+async def get_version_details(app_id: int, database: Database = Depends(get_database)):
     # Aliases for the tables
     md = model_download.alias("md")
     mv = model_version.alias("mv")
@@ -275,12 +300,134 @@ async def get_version_details(app_id: int):
     ]
 
 @router.get("/categories", response_model=List[str])
-async def get_categories():
+async def get_categories(database: Database = Depends(get_database)):
     query = select(model_category.c.name)
     results = await database.fetch_all(query)
     
     if not results:
         raise HTTPException(status_code=404, detail="No categories found")
 
-    
     return list(set([result['name'] for result in results]))
+
+# List of probable root folders
+# ROOT_FOLDERS = [
+#     "/home/ubuntu/android/",
+#     "/home/ubuntu/android/androzoo",
+#     "/home/ubuntu/android/androzoo/2018_n_after",
+#     "/home/ubuntu/android/2018",
+#     "/home/ubuntu/android/old_apks"
+# ]
+
+# def find_remote_file_path(hash_value):
+#     for root in ROOT_FOLDERS:
+#         remote_path = os.path.join(root, hash_value[:1], hash_value[1:2], hash_value[2:3], hash_value[3:4], hash_value[4:5], hash_value[5:6], hash_value)
+#         ssh = paramiko.SSHClient()
+#         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+#         ssh.connect("10.90.78.78", username="ubuntu")
+#         sftp = ssh.open_sftp()
+#         try:
+#             sftp.stat(remote_path)  # Check if the file exists
+#             return remote_path, ssh, sftp
+#         except FileNotFoundError:
+#             sftp.close()
+#             ssh.close()
+#     return None, None, None
+
+# def stream_file_from_remote(hash_value: str):
+#     remote_path, ssh, sftp = find_remote_file_path(hash_value)
+    
+#     if not remote_path:
+#         raise HTTPException(status_code=404, detail="File not found")
+    
+#     print(remote_path)
+#     try:
+#         remote_file = sftp.open(remote_path, 'rb')
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Failed to open remote file: {str(e)}")
+    
+#     def file_generator():
+#         try:
+#             while True:
+#                 data = remote_file.read(1024 * 1024)  # Read in 1MB chunks
+#                 if not data:
+#                     break
+#                 yield data
+#         finally:
+#             remote_file.close()
+#             sftp.close()
+#             ssh.close()
+    
+#     return file_generator
+
+# @router.get("/download/{hash_value}")
+# async def download_file(hash_value: str):
+#     try:
+#         file_generator = stream_file_from_remote(hash_value)
+#         headers = {
+#             'Content-Disposition': f'attachment; filename="{hash_value}"',
+#             'Content-Type': 'application/octet-stream'
+#         }
+#         return StreamingResponse(file_generator(), media_type='application/octet-stream', headers=headers)
+#     except HTTPException as e:
+#         raise e
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+
+def stream_file_from_remote(hash_value: str):
+    base_dirs = [
+        "/home/ubuntu/android/",
+        "/home/ubuntu/android/androzoo",
+        "/home/ubuntu/android/androzoo/2018_n_after",
+        "/home/ubuntu/android/2018",
+        "/home/ubuntu/android/old_apks"
+    ]
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect("10.90.78.78", username="ubuntu")
+    
+    sftp = ssh.open_sftp()
+    
+    remote_file = None
+
+    for base_dir in base_dirs:
+        remote_path = os.path.join(base_dir, hash_value[:1], hash_value[1:2], hash_value[2:3], hash_value[3:4], hash_value[4:5], hash_value[5:6], hash_value)
+        print(remote_path)
+        try:
+            remote_file = sftp.open(str(remote_path), 'rb')
+            break
+        except FileNotFoundError:
+            continue
+    
+    
+    if remote_file is None:
+        sftp.close()
+        ssh.close()
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    def file_generator():
+        try:
+            while True:
+                data = remote_file.read(1024 * 1024)  # Read in 1MB chunks
+                if not data:
+                    break
+                yield data
+        except Exception as e:
+            raise HTTPException(status_code=500, detail="File corrupted")
+        finally:
+            remote_file.close()
+            sftp.close()
+            ssh.close()
+    
+    return file_generator
+
+@router.get("/download/{hash_value}")
+async def download_file(hash_value: str, user: dict = Depends(get_current_user)):
+    try:
+        file_generator = stream_file_from_remote(hash_value)
+        headers = {
+            'Content-Disposition': f'attachment; filename="{hash_value}"',
+            'Content-Type': 'application/octet-stream'
+        }
+        return StreamingResponse(file_generator(), media_type='application/octet-stream', headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

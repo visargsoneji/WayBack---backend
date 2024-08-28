@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from .config import connect, disconnect, init_redis, close_redis
 from .middlewares import DBConnectionMiddleware
+from .routes import app_routes, user_routes
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,8 +27,9 @@ app.add_middleware(
 
 app.add_middleware(DBConnectionMiddleware) # Maintains db connection: With long active time, OperationalError was thrown with new request
 
-from .routes import app_routes
 app.include_router(app_routes.router, prefix="/api")
+app.include_router(user_routes.router, prefix="/api")
+
 
 if __name__ == "__main__":
     import uvicorn

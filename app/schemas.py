@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, constr
 from typing import Optional, List
 from datetime import datetime
 
@@ -27,3 +27,13 @@ class DownloadDetails(BaseModel):
     permissions: List[str]
     rating: float
     total_ratings: int
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    first_name: constr(min_length=1)
+    last_name: constr(min_length=1)
+    password: constr(min_length=1)
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str

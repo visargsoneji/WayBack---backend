@@ -1,7 +1,6 @@
-from sqlalchemy import create_engine, MetaData, text
+from sqlalchemy import create_engine, MetaData
 from databases import Database
 from tenacity import retry, wait_fixed, stop_after_attempt
-from asyncio import sleep
 import redis.asyncio as redis
 from .env import DATABASE_URL
 
@@ -38,3 +37,6 @@ async def close_redis():
 
 def get_redis():
     return redis_client
+
+def get_database():
+    return database

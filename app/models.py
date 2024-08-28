@@ -139,3 +139,13 @@ model_rating = Table(
     Column("created_on", DateTime),
     Column("app_id", Integer)
 )
+
+model_user = Table(
+    "users",
+    metadata,
+    Column("email", String, primary_key=True),
+    Column("first_name", String),
+    Column("last_name", String),
+    Column("password", String),
+    Column("allow_downloads", Boolean)
+)
