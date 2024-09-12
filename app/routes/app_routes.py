@@ -1,20 +1,23 @@
 from fastapi import APIRouter, HTTPException, Query, Response, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select, func, extract, and_
 from sqlalchemy.dialects import postgresql
 from typing import List, Optional
 from databases import Database
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
-import paramiko
 import os
 import json
+import jwt
 
 from ..config import get_database, get_redis
 from ..models import model_description, model_app, model_developer, model_category_apps__model_app_categories, model_category, model_user
 from ..models import model_name, model_download, model_version, model_androidmanifest, model_app_permissions, model_permissionrequested, model_rating
 from ..schemas import ModelName, ModelDescription, DownloadDetails
 from .user_routes import get_current_user
+from ..env import SECRET_KEY, ALGORITHM
+
+ACCESS_TOKEN_EXPIRE_MINUTES = 10  # For example, URL valid for 60 minutes
 
 router = APIRouter()
 
@@ -50,6 +53,7 @@ async def search_apps(
     package_query = f"%{params['package_name']}%" if params["package_name"] else None
     developer_query = f"%{params['developer_name']}%" if params["developer_name"] else None
     category_query = params['categories'].split(",") if params["categories"] else None
+    print('Searching initiated ...')
 
     # Aliases for the tables
     ma = model_app.alias("ma")
@@ -125,10 +129,10 @@ async def search_apps(
     if results is None:
         db_results = await database.fetch_all(query_stmt)
         results = [serialize_result(result) for result in db_results]
-        await redis_client.set(cache_result_key, json.dumps(results), ex=600)  # Cache for 10 minutes
+        await redis_client.set(cache_result_key, json.dumps(results), ex=36000)  
     else:
         results = json.loads(results)
-        await redis_client.expire(cache_result_key, 600)
+        await redis_client.expire(cache_result_key, 36000)
     main_query_time = time.time() - start_time
     print(f"Main query time: {main_query_time:.2f} seconds")
 
@@ -139,10 +143,10 @@ async def search_apps(
     start_time = time.time()
     if total_count is None:
         total_count = await database.fetch_val(count_stmt)
-        await redis_client.set(cache_count_key, total_count, ex=600)  # Cache for 10 minutes
+        await redis_client.set(cache_count_key, total_count, ex=36000)  
     else:
         total_count = int(total_count)
-        await redis_client.expire(cache_count_key, 600)
+        await redis_client.expire(cache_count_key, 36000)
     count_query_time = time.time() - start_time
     print(f"Count query time: {count_query_time:.2f} seconds")
 
@@ -301,133 +305,106 @@ async def get_version_details(app_id: int, database: Database = Depends(get_data
 
 @router.get("/categories", response_model=List[str])
 async def get_categories(database: Database = Depends(get_database)):
+    redis_client = get_redis()
+    cache_key = "categories"
+
+    # Try to get the categories from Redis cache
+    cached_categories = await redis_client.get(cache_key)
+    
+    if cached_categories:
+        # If categories are found in cache, return them
+        return json.loads(cached_categories)
+
+    # If not found in cache, fetch from database
     query = select(model_category.c.name)
     results = await database.fetch_all(query)
     
     if not results:
         raise HTTPException(status_code=404, detail="No categories found")
 
-    return list(set([result['name'] for result in results]))
+    categories = list(set([result['name'] for result in results]))
 
-# List of probable root folders
-# ROOT_FOLDERS = [
-#     "/home/ubuntu/android/",
-#     "/home/ubuntu/android/androzoo",
-#     "/home/ubuntu/android/androzoo/2018_n_after",
-#     "/home/ubuntu/android/2018",
-#     "/home/ubuntu/android/old_apks"
-# ]
+    await redis_client.set(cache_key, json.dumps(categories), ex=36000)  # Cache expires in 600 seconds
 
-# def find_remote_file_path(hash_value):
-#     for root in ROOT_FOLDERS:
-#         remote_path = os.path.join(root, hash_value[:1], hash_value[1:2], hash_value[2:3], hash_value[3:4], hash_value[4:5], hash_value[5:6], hash_value)
-#         ssh = paramiko.SSHClient()
-#         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-#         ssh.connect("10.90.78.78", username="ubuntu")
-#         sftp = ssh.open_sftp()
-#         try:
-#             sftp.stat(remote_path)  # Check if the file exists
-#             return remote_path, ssh, sftp
-#         except FileNotFoundError:
-#             sftp.close()
-#             ssh.close()
-#     return None, None, None
+    return categories
 
-# def stream_file_from_remote(hash_value: str):
-#     remote_path, ssh, sftp = find_remote_file_path(hash_value)
-    
-#     if not remote_path:
-#         raise HTTPException(status_code=404, detail="File not found")
-    
-#     print(remote_path)
-#     try:
-#         remote_file = sftp.open(remote_path, 'rb')
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Failed to open remote file: {str(e)}")
-    
-#     def file_generator():
-#         try:
-#             while True:
-#                 data = remote_file.read(1024 * 1024)  # Read in 1MB chunks
-#                 if not data:
-#                     break
-#                 yield data
-#         finally:
-#             remote_file.close()
-#             sftp.close()
-#             ssh.close()
-    
-#     return file_generator
+# Base directories to search for the file
+base_dirs = [
+    "/Volumes/apks",
+    "/Volumes/apks/2018",
+    "/Volumes/apks/old_apks"
+]
 
-# @router.get("/download/{hash_value}")
-# async def download_file(hash_value: str):
-#     try:
-#         file_generator = stream_file_from_remote(hash_value)
-#         headers = {
-#             'Content-Disposition': f'attachment; filename="{hash_value}"',
-#             'Content-Type': 'application/octet-stream'
-#         }
-#         return StreamingResponse(file_generator(), media_type='application/octet-stream', headers=headers)
-#     except HTTPException as e:
-#         raise e
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
-def stream_file_from_remote(hash_value: str):
-    base_dirs = [
-        "/home/ubuntu/android/",
-        "/home/ubuntu/android/androzoo",
-        "/home/ubuntu/android/androzoo/2018_n_after",
-        "/home/ubuntu/android/2018",
-        "/home/ubuntu/android/old_apks"
-    ]
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect("10.90.78.78", username="ubuntu")
+def find_file_path(hash_value: str) -> str:
+    """
+    Search for the file in the specified directories and return the path if found.
+    """
+    missing_dirs = [base_dir for base_dir in base_dirs if not os.path.exists(base_dir)]
+    if missing_dirs:
+        # If any directory is missing, raise an error
+        raise HTTPException(status_code=500, detail=f"File server not mounted.")
     
-    sftp = ssh.open_sftp()
-    
-    remote_file = None
-
     for base_dir in base_dirs:
-        remote_path = os.path.join(base_dir, hash_value[:1], hash_value[1:2], hash_value[2:3], hash_value[3:4], hash_value[4:5], hash_value[5:6], hash_value)
-        print(remote_path)
-        try:
-            remote_file = sftp.open(str(remote_path), 'rb')
-            break
-        except FileNotFoundError:
-            continue
-    
-    
-    if remote_file is None:
-        sftp.close()
-        ssh.close()
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    def file_generator():
-        try:
-            while True:
-                data = remote_file.read(1024 * 1024)  # Read in 1MB chunks
-                if not data:
-                    break
-                yield data
-        except Exception as e:
-            raise HTTPException(status_code=500, detail="File corrupted")
-        finally:
-            remote_file.close()
-            sftp.close()
-            ssh.close()
-    
-    return file_generator
+        file_path = os.path.join(base_dir, hash_value[:1], hash_value[1:2], hash_value[2:3], hash_value[3:4], hash_value[4:5], hash_value[5:6], hash_value)
+        if os.path.exists(file_path):
+            return file_path
+    raise FileNotFoundError("File not found in the specified directories.")
+
+# Function to create a signed URL
+def create_presigned_url(hash_value: str, expires_delta: timedelta) -> str:
+    expire = datetime.utcnow() + expires_delta
+    token_data = {
+        "sub": hash_value,
+        "exp": expire
+    }
+    # Create a signed token
+    token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+    # Generate a URL with the signed token
+    presigned_url = f"/api/download/{hash_value}?token={token}"
+    return presigned_url
+
+@router.get("/generate-download-url/{hash_value}")
+async def generate_download_url(hash_value: str, user: dict = Depends(get_current_user)):
+    try:
+        # Check if the file exists in one of the specified directories
+        file_path = find_file_path(hash_value)
+
+        # Generate a pre-signed URL with a token
+        presigned_url = create_presigned_url(hash_value, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+
+        return JSONResponse({"url": presigned_url})
+
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/download/{hash_value}")
-async def download_file(hash_value: str, user: dict = Depends(get_current_user)):
+async def download_file(hash_value: str, token: str):
     try:
-        file_generator = stream_file_from_remote(hash_value)
-        headers = {
-            'Content-Disposition': f'attachment; filename="{hash_value}"',
-            'Content-Type': 'application/octet-stream'
-        }
-        return StreamingResponse(file_generator(), media_type='application/octet-stream', headers=headers)
+        # Decode the token
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload["sub"] != hash_value:
+            raise HTTPException(status_code=403, detail="Invalid token")
+
+        # Verify the file's existence again (defensive check)
+        file_path = find_file_path(hash_value)
+    
+        def file_generator():
+            with open(file_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+
+        # Serve the file from the identified path
+        return StreamingResponse(file_generator(), media_type='application/octet-stream', headers={
+            'Content-Disposition': f'attachment; filename="{hash_value}.apk"'
+        })
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=403, detail="Token expired")
+    except jwt.JWTError:
+        raise HTTPException(status_code=403, detail="Invalid token")
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

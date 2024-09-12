@@ -1,4 +1,3 @@
-import sqlalchemy
 from .config import metadata
 from sqlalchemy import Table, Column, Integer, String, DateTime, Boolean, Float
 

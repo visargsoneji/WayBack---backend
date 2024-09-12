@@ -51,7 +51,7 @@ async def login(user: UserLogin, database: Database = Depends(get_database)):
     if not verify_password(user.password, result['password']):
         raise HTTPException(status_code=400, detail="Incorrect password")
     
-    access_token_expires = timedelta(days=3)
+    access_token_expires =  timedelta(days=3) # timedelta(seconds=30)
     access_token = create_access_token(data={"sub": result['email']}, expires_delta=access_token_expires)
     
     return {"access_token": access_token, "token_type": "bearer"}

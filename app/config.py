@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, MetaData
 from databases import Database
 from tenacity import retry, wait_fixed, stop_after_attempt
 import redis.asyncio as redis
-from .env import DATABASE_URL
+from .env import DATABASE_URL, REDIS_URL
 
 database = Database(DATABASE_URL)
 metadata = MetaData()
@@ -28,7 +28,7 @@ async def disconnect():
 
 async def init_redis():
     global redis_client
-    redis_client = redis.Redis.from_url('redis://localhost', decode_responses=True)
+    redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True) # "redis://localhost" | "redis://host.docker.internal"
     #print("Redis client initialized:", redis_client)
 
 async def close_redis():
