@@ -59,7 +59,7 @@ async def login(user: UserLogin, database: Database = Depends(get_database)):
         if not verify_password(user.password, result['password']):
             raise HTTPException(status_code=400, detail="Incorrect password")
         
-        access_token = create_access_token(data={"sub": result['email']}, expires_delta=timedelta(minutes=1))
+        access_token = create_access_token(data={"sub": result['email']}, expires_delta=timedelta(days=3))
         
         return {"access_token": access_token, "token_type": "bearer"}
     
@@ -106,7 +106,7 @@ async def get_current_user(request: Request, database: Database = Depends(get_da
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.PyJWTError:
-        raise HTTPException(status_code=403, detail="Error decoding token")
+        raise HTTPException(status_code=403, detail="Error decoding user token")
     except MySQLError as db_error:
         raise HTTPException(status_code=500, detail=f"Database error: {str(db_error)}")
     except Exception as e:
