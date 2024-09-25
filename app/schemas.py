@@ -2,14 +2,14 @@ from pydantic import BaseModel, EmailStr, constr
 from typing import Optional, List
 from datetime import datetime
 
-class ModelName(BaseModel):
+class AppResults(BaseModel):
     id: int
     name: str
     created_on: Optional[datetime] = None
     app_id: int
     package_name: str
 
-class ModelDescription(BaseModel):
+class AppDetails(BaseModel):
     id: int
     text: str
     name: str
@@ -19,7 +19,7 @@ class ModelDescription(BaseModel):
     developer_id: str
     categories: List[str]
 
-class DownloadDetails(BaseModel):
+class VersionDetails(BaseModel):
     hash: str
     size: int
     version: str
