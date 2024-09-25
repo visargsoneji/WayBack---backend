@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query, Response, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import select, func, extract, and_
+from sqlalchemy import insert, select, func, extract, and_
+from pymysql.err import MySQLError
 from sqlalchemy.dialects import postgresql
 from typing import List, Optional
 from databases import Database
@@ -11,13 +12,14 @@ import json
 import jwt
 
 from ..config import get_database, get_redis
-from ..models import model_description, model_app, model_developer, model_category_apps__model_app_categories, model_category, model_user
+from ..models import model_description, model_app, model_developer, model_category_apps__model_app_categories, model_category
 from ..models import model_name, model_download, model_version, model_androidmanifest, model_app_permissions, model_permissionrequested, model_rating
-from ..schemas import ModelName, ModelDescription, DownloadDetails
+from ..models import download_log
+from ..schemas import AppResults, AppDetails, VersionDetails
 from .user_routes import get_current_user
 from ..env import SECRET_KEY, ALGORITHM
 
-ACCESS_TOKEN_EXPIRE_MINUTES = 10  # For example, URL valid for 60 minutes
+ACCESS_TOKEN_EXPIRE_MINUTES = 5  # validity for pre-signed url
 
 router = APIRouter()
 
@@ -42,7 +44,7 @@ async def get_query_params(
         "limit": limit
     }
 
-@router.get("/search/", response_model=List[ModelName])
+@router.get("/search/", response_model=List[AppResults])
 async def search_apps(
     response: Response,
     params: dict = Depends(get_query_params),
@@ -168,7 +170,7 @@ def serialize_result(result):
             result_dict[key] = value.isoformat()  # Convert datetime to ISO format string
     return result_dict
 
-@router.get("/details/{app_id}", response_model=ModelDescription)
+@router.get("/details/{app_id}", response_model=AppDetails)
 async def fetchDetails(app_id: int, database: Database = Depends(get_database)):
     md = model_description.alias("md")
     ma = model_app.alias("ma")
@@ -209,7 +211,7 @@ async def fetchDetails(app_id: int, database: Database = Depends(get_database)):
     
     return result
 
-@router.get("/version-details/{app_id}", response_model=List[DownloadDetails])
+@router.get("/version-details/{app_id}", response_model=List[VersionDetails])
 async def get_version_details(app_id: int, database: Database = Depends(get_database)):
     # Aliases for the tables
     md = model_download.alias("md")
@@ -291,7 +293,7 @@ async def get_version_details(app_id: int, database: Database = Depends(get_data
             download_details[download_id]["permissions"].add(permission_2)
 
     return [
-        DownloadDetails(
+        VersionDetails(
             hash=details["hash"],
             size=details["size"],
             version=details["version"],
@@ -363,20 +365,65 @@ def create_presigned_url(hash_value: str, expires_delta: timedelta) -> str:
     presigned_url = f"/api/download/{hash_value}?token={token}"
     return presigned_url
 
+async def is_rate_limited(user_email: str) -> bool:
+    key = f"download_rate:{user_email}"
+    redis_client = get_redis()
+    current_downloads = await redis_client.get(key)
+
+    if current_downloads and int(current_downloads) >= 10:
+        return True
+    else:
+        await redis_client.incr(key)
+        await redis_client.expire(key, 3600)  # Reset the counter every hour
+        return False
+    
+async def log_download_activity(user_email: str, hash_value: str, request: Request, database):
+    """
+    Log the download activity with the user's email, hash, user-agent, and IP address.
+    """
+    try: 
+        user_agent = request.headers.get('user-agent', 'Unknown')
+        ip_address = request.headers.get('x-forwarded-for', request.client.host)
+
+        log_data = {
+            "email": user_email,
+            "hash": hash_value,
+            "user_agent": user_agent,
+            "ip_address": ip_address,
+        }
+        
+        query = insert(download_log).values(**log_data)
+        await database.execute(query)
+    
+    except MySQLError as db_error:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(db_error)}")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
 @router.get("/generate-download-url/{hash_value}")
-async def generate_download_url(hash_value: str, user: dict = Depends(get_current_user)):
+async def generate_download_url(hash_value: str, request: Request, user: dict = Depends(get_current_user), database: Database = Depends(get_database)):
     try:
+        # Check for rate limiting
+        if await is_rate_limited(user["email"]):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again after an hour!")
+        
         # Check if the file exists in one of the specified directories
-        file_path = find_file_path(hash_value)
+        find_file_path(hash_value)
 
         # Generate a pre-signed URL with a token
         presigned_url = create_presigned_url(hash_value, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
 
-        return JSONResponse({"url": presigned_url})
+        await log_download_activity(user["email"], hash_value, request, database)
 
+        return JSONResponse({"url": presigned_url})
+    
+    except HTTPException as http_exc:
+        raise http_exc
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        print("Exception in generating download url: "+ str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/download/{hash_value}")
@@ -400,6 +447,8 @@ async def download_file(hash_value: str, token: str):
             'Content-Disposition': f'attachment; filename="{hash_value}.apk"'
         })
 
+    except HTTPException as http_exc:
+        raise http_exc
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=403, detail="Token expired")
     except jwt.JWTError:

@@ -29,7 +29,7 @@ async def disconnect():
 async def init_redis():
     global redis_client
     redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True) # "redis://localhost" | "redis://host.docker.internal"
-    #print("Redis client initialized:", redis_client)
+    await redis_client.ping()
 
 async def close_redis():
     global redis_client

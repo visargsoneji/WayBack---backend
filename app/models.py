@@ -1,5 +1,5 @@
 from .config import metadata
-from sqlalchemy import Table, Column, Integer, String, DateTime, Boolean, Float
+from sqlalchemy import Table, Column, Integer, String, DateTime, Boolean, Float, func, Text, TIMESTAMP
 
 model_name = Table(
     #"visarg_model_name",
@@ -147,4 +147,16 @@ model_user = Table(
     Column("last_name", String),
     Column("password", String),
     Column("allow_downloads", Boolean)
+)
+
+# Model for logging download activity
+download_log = Table(
+    "download_logs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("email", String, nullable=False),
+    Column("hash", String, nullable=False),
+    Column("user_agent", Text, nullable=False),
+    Column("ip_address", String, nullable=False),
+    Column("timestamp", TIMESTAMP, default=func.now(), nullable=False),
 )
