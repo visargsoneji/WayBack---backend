@@ -19,6 +19,7 @@ from ..schemas import AppResults, AppDetails, VersionDetails
 from .user_routes import get_current_user
 from ..env import SECRET_KEY, ALGORITHM
 
+MATURITY = ["Everyone", "Low Maturity", "Medium Maturity", "High Maturity"]
 ACCESS_TOKEN_EXPIRE_MINUTES = 5  # validity for pre-signed url
 
 router = APIRouter()
@@ -28,6 +29,7 @@ async def get_query_params(
     package_name: Optional[str] = None,
     developer_name: Optional[str] = None,
     categories: Optional[str] = None,
+    maturity: Optional[str] = None,
     downloadable: Optional[bool] = True,
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100),
@@ -39,6 +41,7 @@ async def get_query_params(
         "package_name": package_name,
         "developer_name": developer_name,
         "categories": categories,
+        "maturity": maturity,
         "downloadable": downloadable,
         "page": page,
         "limit": limit
@@ -55,7 +58,8 @@ async def search_apps(
     package_query = f"%{params['package_name']}%" if params["package_name"] else None
     developer_query = f"%{params['developer_name']}%" if params["developer_name"] else None
     category_query = params['categories'].split(",") if params["categories"] else None
-    print('Searching initiated ...')
+    maturity_query = params['maturity'].split(",") if params["maturity"] else None
+    print('Searching initiated ...', params)
 
     # Aliases for the tables
     ma = model_app.alias("ma")
@@ -85,6 +89,7 @@ async def search_apps(
     if developer_query:
         filters.append(mdev.c.developer_id.like(developer_query))
         base_query = base_query.join(mdev, ma.c.developer_id == mdev.c.id)
+    category_query = category_query + maturity_query if category_query and maturity_query else (maturity_query or category_query)
     if category_query:
         subquery = (
             select(mca.c.model_app_id)
@@ -208,7 +213,9 @@ async def fetchDetails(app_id: int, database: Database = Depends(get_database)):
     
     result = dict(result)
     result["categories"] = result["categories"].split(",") if result["categories"] else []
-    
+    result["maturity"] = [category for category in result["categories"] if category in MATURITY]
+    result["categories"] = [category for category in result["categories"] if category not in MATURITY]
+
     return result
 
 @router.get("/version-details/{app_id}", response_model=List[VersionDetails])
@@ -324,11 +331,20 @@ async def get_categories(database: Database = Depends(get_database)):
     if not results:
         raise HTTPException(status_code=404, detail="No categories found")
 
-    categories = list(set([result['name'] for result in results]))
+    unique_categories = list(set([result['name'] for result in results]))
+    categories = [category for category in unique_categories if category not in MATURITY]
 
-    await redis_client.set(cache_key, json.dumps(categories), ex=36000)  # Cache expires in 600 seconds
+    await redis_client.set(cache_key, json.dumps(categories))
 
     return categories
+
+@router.get("/maturity", response_model=List[str])
+async def get_maturity():
+    return MATURITY
+
+@router.get("/permissions", response_model=List[str])
+async def get_maturity():
+    return ["Camera", "Location"]
 
 # Base directories to search for the file
 base_dirs = [
