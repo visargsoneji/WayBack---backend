@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, constr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 from datetime import datetime
 
@@ -18,6 +18,7 @@ class AppDetails(BaseModel):
     app_id: int
     developer_id: str
     categories: List[str]
+    maturity: List[str]
 
 class VersionDetails(BaseModel):
     hash: str
@@ -30,9 +31,9 @@ class VersionDetails(BaseModel):
 
 class UserCreate(BaseModel):
     email: EmailStr
-    first_name: constr(min_length=1)
-    last_name: constr(min_length=1)
-    password: constr(min_length=1)
+    first_name: str = Field(..., min_length=1)
+    last_name: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
 
 class UserLogin(BaseModel):
     email: EmailStr
