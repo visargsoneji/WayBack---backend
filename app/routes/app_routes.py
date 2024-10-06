@@ -89,7 +89,7 @@ async def search_apps(
     if developer_query:
         filters.append(mdev.c.developer_id.like(developer_query))
         base_query = base_query.join(mdev, ma.c.developer_id == mdev.c.id)
-    category_query = category_query + maturity_query if category_query else maturity_query        
+    category_query = category_query + maturity_query if category_query and maturity_query else (maturity_query or category_query)
     if category_query:
         subquery = (
             select(mca.c.model_app_id)
