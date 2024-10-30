@@ -104,6 +104,16 @@ model_androidmanifest = Table(
     Column("is_parsing_complete", Boolean)
 )
 
+model_sdkversion = Table(
+    "model_sdkversion",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("manifest_id", Integer),
+    Column("min_sdk_number", Integer),
+    Column("target_sdk_number", Integer),
+    Column("max_sdk_number", Integer)
+)
+
 model_permissionrequested = Table(
     "model_permissionrequested",
     metadata,

@@ -28,6 +28,8 @@ class VersionDetails(BaseModel):
     permissions: List[str]
     rating: float
     total_ratings: int
+    min_sdk: Optional[int] = None
+    target_sdk: Optional[int] = None
 
 class UserCreate(BaseModel):
     email: EmailStr

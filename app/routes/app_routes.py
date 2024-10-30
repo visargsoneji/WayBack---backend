@@ -12,7 +12,7 @@ import json
 import jwt
 
 from ..config import get_database, get_redis
-from ..models import model_description, model_app, model_developer, model_category_apps__model_app_categories, model_category
+from ..models import model_description, model_app, model_developer, model_category_apps__model_app_categories, model_category, model_sdkversion
 from ..models import model_name, model_download, model_version, model_androidmanifest, model_app_permissions, model_permissionrequested, model_rating
 from ..models import download_log
 from ..schemas import AppResults, AppDetails, VersionDetails
@@ -227,6 +227,7 @@ async def get_version_details(app_id: int, database: Database = Depends(get_data
     permissions_2 = model_permissionrequested.alias("permissions_2")
     ma = model_androidmanifest.alias("ma")
     mr = model_rating.alias("mr")
+    sdk = model_sdkversion.alias("sdk")
     
     query_stmt = (
         select(
@@ -242,7 +243,9 @@ async def get_version_details(app_id: int, database: Database = Depends(get_data
             mr.c.two_star_ratings,
             mr.c.three_star_ratings,
             mr.c.four_star_ratings,
-            mr.c.five_star_ratings
+            mr.c.five_star_ratings,
+            sdk.c.min_sdk_number,
+            sdk.c.target_sdk_number
         )
         .select_from(
             md
@@ -250,6 +253,7 @@ async def get_version_details(app_id: int, database: Database = Depends(get_data
             .outerjoin(permissions_1, md.c.id == permissions_1.c.download_id)
             .outerjoin(ma, md.c.id == ma.c.download_id)
             .outerjoin(permissions_2, ma.c.id == permissions_2.c.manifest_id)
+            .outerjoin(sdk, ma.c.id == sdk.c.manifest_id)
             .outerjoin(
                 mr,
                 (md.c.app_id == mr.c.app_id) &
@@ -281,6 +285,8 @@ async def get_version_details(app_id: int, database: Database = Depends(get_data
         three_star_ratings = row["three_star_ratings"]
         four_star_ratings = row["four_star_ratings"]
         five_star_ratings = row["five_star_ratings"]
+        min_sdk = row["min_sdk_number"]
+        target_sdk = row["target_sdk_number"]
         
         if download_id not in download_details:
             # print(download_id, one_star_ratings, two_star_ratings, three_star_ratings, four_star_ratings, five_star_ratings)
@@ -290,8 +296,10 @@ async def get_version_details(app_id: int, database: Database = Depends(get_data
                 "created_on": created_on,
                 "version": version,
                 "permissions": set(),
-        "total_ratings": number_of_ratings if number_of_ratings != None else 0,
-                "rating": round(sum((i + 1) * r for i, r in enumerate([one_star_ratings, two_star_ratings, three_star_ratings, four_star_ratings, five_star_ratings])) / number_of_ratings, 2) if number_of_ratings != None and number_of_ratings != 0 else 0
+                "total_ratings": number_of_ratings if number_of_ratings != None else 0,
+                "rating": round(sum((i + 1) * r for i, r in enumerate([one_star_ratings, two_star_ratings, three_star_ratings, four_star_ratings, five_star_ratings])) / number_of_ratings, 2) if number_of_ratings != None and number_of_ratings != 0 else 0,
+                "min_sdk": min_sdk if min_sdk != None and min_sdk >= 1 and min_sdk <= 35 else None,
+                "target_sdk": target_sdk if target_sdk != None and target_sdk >= 1 and target_sdk <= 35 else None,
             }
         
         if permission_1:
@@ -307,7 +315,9 @@ async def get_version_details(app_id: int, database: Database = Depends(get_data
             created_on=details["created_on"],
             permissions=list(details["permissions"]),
             total_ratings=details["total_ratings"],
-            rating=details["rating"]
+            rating=details["rating"],
+            min_sdk=details["min_sdk"],
+            target_sdk=details["target_sdk"]
         )
         for details in download_details.values()
     ]
@@ -343,7 +353,7 @@ async def get_maturity():
     return MATURITY
 
 @router.get("/permissions", response_model=List[str])
-async def get_maturity():
+async def get_permission():
     return ["Camera", "Location"]
 
 # Base directories to search for the file
