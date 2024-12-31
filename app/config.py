@@ -1,8 +1,9 @@
 from sqlalchemy import create_engine, MetaData
 from databases import Database
+from elasticsearch import AsyncElasticsearch
 from tenacity import retry, wait_fixed, stop_after_attempt
 import redis.asyncio as redis
-from .env import DATABASE_URL, REDIS_URL
+from .env import DATABASE_URL, REDIS_URL, ELASTICSEARCH_URL, ELASTIC_USER, ELASTIC_PASSWORD, ES_CA_CERTS
 
 database = Database(DATABASE_URL)
 metadata = MetaData()
@@ -26,6 +27,21 @@ async def connect():
 async def disconnect():
     await database.disconnect()
 
+async def connect_elastic():
+    global es_client_async
+    es_client_async = AsyncElasticsearch(ELASTICSEARCH_URL, 
+                                         basic_auth=(ELASTIC_USER, ELASTIC_PASSWORD), 
+                                         ca_certs=ES_CA_CERTS, 
+                                         connections_per_node=20,
+                                         max_retries=3, 
+                                         retry_on_timeout=True,
+                                         request_timeout=60)
+    await es_client_async.info()
+
+async def close_elastic():
+    global es_client_async
+    await es_client_async.close()
+
 async def init_redis():
     global redis_client
     redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True) # "redis://localhost" | "redis://host.docker.internal"
@@ -40,3 +56,6 @@ def get_redis():
 
 def get_database():
     return database
+
+def get_elasticsearch_async():
+    return es_client_async
