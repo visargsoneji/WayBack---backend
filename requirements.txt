@@ -8,3 +8,5 @@ redis==5.0.7
 tenacity==8.5.0
 bcrypt==4.2.0
 pyjwt==2.9.0
+elasticsearch==8.15.1
+aiohttp==3.10.10

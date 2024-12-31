@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
-from .config import connect, disconnect, init_redis, close_redis
+from .config import connect, disconnect, init_redis, close_redis, connect_elastic, close_elastic
 from .middlewares import DBConnectionMiddleware
 from .routes import app_routes, user_routes
 
@@ -10,9 +10,11 @@ from .routes import app_routes, user_routes
 async def lifespan(app: FastAPI):
     await connect()
     await init_redis()
+    await connect_elastic()
     yield
     await disconnect()
     await close_redis()
+    await close_elastic()
 
 app = FastAPI(lifespan=lifespan)
 
