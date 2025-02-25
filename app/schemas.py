@@ -40,3 +40,15 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+class QueryParams(BaseModel):
+    keyword: Optional[str] = Field(None, max_length=100, pattern=r"^[a-zA-Z0-9\s\-._]*$")
+    query: Optional[str] = Field(None, max_length=100, pattern=r"^[a-zA-Z0-9\s\-_]*$")
+    package_name: Optional[str] = Field(None, max_length=100, pattern=r"^[a-zA-Z0-9._-]*$")
+    developer_name: Optional[str] = Field(None, max_length=100, pattern=r"^[a-zA-Z0-9\s\-_]*$")
+    categories: Optional[str] = Field(None, max_length=100, pattern=r"^[a-zA-Z0-9\s,&]*$")
+    maturity: Optional[str] = Field(None, max_length=100, pattern=r"^[a-zA-Z0-9\s,]*$")
+    permissions: Optional[str] = Field(None, max_length=200, pattern=r"^[a-zA-Z0-9\s,]*$")
+    downloadable: Optional[bool] = True
+    page: int = Field(1, ge=1, le=5000)
+    limit: int = Field(10, ge=10, le=100)

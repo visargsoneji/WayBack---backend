@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Response, 
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import insert, select, func, extract, and_
 from pymysql.err import MySQLError
+from pydantic import ValidationError
 from sqlalchemy.dialects import postgresql
 from typing import List, Optional
 from databases import Database
@@ -17,7 +18,7 @@ from ..config import get_database, get_redis, get_elasticsearch_async
 from ..models import model_description, model_app, model_developer, model_category_apps__model_app_categories, model_category, model_sdkversion
 from ..models import model_name, model_download, model_version, model_androidmanifest, model_app_permissions, model_permissionrequested, model_rating
 from ..models import download_log
-from ..schemas import AppResults, AppDetails, VersionDetails
+from ..schemas import AppResults, AppDetails, VersionDetails, QueryParams
 from .user_routes import get_current_user
 from ..env import SECRET_KEY, ALGORITHM, INDEX
 
@@ -179,21 +180,27 @@ async def get_query_params(
     permissions: Optional[str] = None,
     downloadable: Optional[bool] = True,
     page: int = Query(1, ge=1),
-    limit: int = Query(10, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=100),
 ):
-    return {
-        "keyword": keyword,
-        "query": query,
-        "package_name": package_name,
-        "developer_name": developer_name,
-        "categories": categories,
-        "maturity": maturity,
-        "permissions": permissions,
-        "downloadable": downloadable,
-        "page": page,
-        "limit": limit
-    }
-
+    try:
+        # Validate parameters with Pydantic
+        params = QueryParams(
+            keyword=keyword,
+            query=query,
+            package_name=package_name,
+            developer_name=developer_name,
+            categories=categories,
+            maturity=maturity,
+            permissions=permissions,
+            downloadable=downloadable,
+            page=page,
+            limit=limit,
+        )
+        return params.dict()
+    except ValidationError as e:
+        print('Validation error in search req')
+        raise HTTPException(status_code=400, detail=f"Input validation error: {e.errors()}")
+    
 @router.get("/search/", response_model=List[dict])
 async def search_apps(
     response: Response,
@@ -423,6 +430,10 @@ async def search_apps(
                 "package_name": source.get("package_name")
             })
 
+        # Set response headers
+        if total_count >= 50000:
+            total_count = 50000 # elastic search limitation, solution -> scroll api or config
+            
         # Cache the result in Redis with a 6 hr expiration time
         await redis_client.set(
             cache_key,
@@ -430,9 +441,6 @@ async def search_apps(
             ex=cache_expiration  # Expiration time in seconds 
         )
         
-        # Set response headers
-        if total_count >= 50000:
-            total_count = 50000 # elastic search limitation, solution -> scroll api or config
         response.headers["x-total-count"] = str(total_count)
         return hits
 
@@ -455,6 +463,8 @@ async def fetchDetails(
     database: Database = Depends(get_database), 
     redis_client = Depends(get_redis)  # Redis client for caching
 ):
+    if app_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid app_id")
     # Generate a unique cache key for the app_id
     cache_key = f"details:{app_id}"
 
@@ -522,6 +532,8 @@ async def get_version_details(
     database: Database = Depends(get_database), 
     redis_client = Depends(get_redis)  # Redis client for caching
 ):
+    if app_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid app_id")
     # Generate a unique cache key for the app_id
     cache_key = f"version-details:{app_id}"
 
@@ -676,26 +688,50 @@ async def get_maturity():
     return MATURITY
 
 # Base directories to search for the file
-base_dirs = [
+ALLOWED_BASE_DIRS = [
     "/Volumes/apks",
     "/Volumes/apks/2018",
     "/Volumes/apks/old_apks"
 ]
 
+def sanitize_file_path(hash_value: str) -> str:
+    """
+    Sanitize the hash_value to ensure it cannot traverse directories.
+    """
+    return os.path.basename(hash_value)  # Ensure only the base name is used
+
+
+def validate_file_path(file_path: str) -> bool:
+    """
+    Ensure the file path is within the allowed base directories.
+    """
+    for base_dir in ALLOWED_BASE_DIRS:
+        if os.path.commonpath([base_dir, file_path]) == base_dir:
+            return True
+    return False
+
 def find_file_path(hash_value: str) -> str:
     """
-    Search for the file in the specified directories and return the path if found.
+    Search for the file in the allowed directories and validate the path.
     """
-    missing_dirs = [base_dir for base_dir in base_dirs if not os.path.exists(base_dir)]
-    if missing_dirs:
-        # If any directory is missing, raise an error
-        raise HTTPException(status_code=500, detail=f"File server not mounted.")
-    
-    for base_dir in base_dirs:
-        file_path = os.path.join(base_dir, hash_value[:1], hash_value[1:2], hash_value[2:3], hash_value[3:4], hash_value[4:5], hash_value[5:6], hash_value)
-        if os.path.exists(file_path):
+    # Sanitize the hash_value
+    sanitized_hash = sanitize_file_path(hash_value)
+
+    # Construct possible paths and validate
+    for base_dir in ALLOWED_BASE_DIRS:
+        file_path = os.path.join(
+            base_dir,
+            sanitized_hash[:1],
+            sanitized_hash[1:2],
+            sanitized_hash[2:3],
+            sanitized_hash[3:4],
+            sanitized_hash[4:5],
+            sanitized_hash[5:6],
+            sanitized_hash
+        )
+        if validate_file_path(file_path) and os.path.exists(file_path):
             return file_path
-    raise FileNotFoundError("File not found in the specified directories.")
+    raise FileNotFoundError("File not found.")
 
 async def get_package_name(hash_value: str, database) -> str:
     """
